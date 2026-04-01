@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Synclock</title>
+    
+    <link rel="manifest" href='data:application/json,{
+        "name": "Synclock",
+        "short_name": "Synclock",
+        "description": "High-precision NTP synced clock",
+        "start_url": ".",
+        "display": "standalone",
+        "background_color": "#1a1a1a",
+        "theme_color": "#ffe600",
+        "icons": [
+            {
+                "src": "https://via.placeholder.com/192x192/333333/ffe600?text=S",
+                "sizes": "192x192",
+                "type": "image/png"
+            },
+            {
+                "src": "https://via.placeholder.com/512x512/333333/ffe600?text=Synclock",
+                "sizes": "512x512",
+                "type": "image/png"
+            }
+        ]
+    }'>
+    
+    <meta name="theme-color" content="#ffe600">
+    <style>
+        :root {
+            --bg: #1a1a1a; --card: #333333; --accent: #ffe600;
+            --text-main: #ffffff; --text-sub: #cccccc; --border: #555555;
+            --sun: #ff5555; --sat: #55aaff;
+        }
+        body { font-family: 'Inter', 'Segoe UI', 'Meiryo', sans-serif; background: var(--bg); color: var(--text-main); display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; overflow: hidden; -webkit-font-smoothing: antialiased; }
+        
+        .container { background: var(--card); padding: 2.5rem; border-radius: 32px; border: 1px solid var(--border); text-align: center; width: 350px; box-shadow: 0 30px 60px rgba(0,0,0,0.5); position: relative; }
+        
+        .sync-controls { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        
+        .btn { background: transparent; border: 1px solid var(--border); color: var(--text-sub); padding: 5px 16px; border-radius: 20px; font-size: 0.7rem; cursor: pointer; font-weight: bold; transition: 0.3s; text-transform: uppercase; letter-spacing: 1px; }
+        .btn:hover { border-color: var(--text-main); color: var(--text-main); }
+        .btn.active { border-color: var(--accent); color: var(--accent); text-shadow: 0 0 8px rgba(255, 230, 0, 0.3); }
+
+        #clock { font-size: 5rem; font-weight: 900; margin: 0; color: #fff; font-variant-numeric: tabular-nums; letter-spacing: -4px; line-height: 1; cursor: pointer; user-select: none; }
+        
+        #date-display { font-size: 1.1rem; color: var(--text-sub); margin: 15px 0 25px; font-weight: 600; cursor: pointer; display: inline-block; padding: 4px 12px; border-radius: 8px; transition: 0.2s; }
+        #date-display:hover { background: rgba(255, 230, 0, 0.1); color: var(--accent); }
+
+        hr { border: 0; border-top: 1px solid var(--border); margin: 20px 0; opacity: 0.3; }
+
+        .cal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+        .nav-btn { background: transparent; border: 1px solid var(--border); color: var(--text-main); cursor: pointer; padding: 4px 12px; border-radius: 6px; font-size: 0.7rem; }
+        
+        .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+        .cell { font-size: 0.85rem; padding: 10px 0; border-radius: 8px; background: rgba(0,0,0,0.2); color: var(--text-sub); }
+        .head { font-size: 0.7rem; font-weight: bold; opacity: 0.5; }
+        .today { background: var(--accent) !important; color: var(--card) !important; font-weight: 900; }
+        .sun { color: var(--sun); } .sat { color: var(--sat); } .other-month { opacity: 0.1; }
+
+        canvas, video { display: none; }
+        .sync-flash { animation: flash-yellow 0.8s ease-out; }
+        @keyframes flash-yellow { 0% { background: var(--accent); } 100% { background: transparent; } }
+    </style>
+</head>
+<body>
+
+<div class="container" id="main-card">
+    <div class="sync-controls">
+        <button id="sync-btn" class="btn" onclick="syncTime('MANUAL')">Sync</button>
+        <button id="float-btn" class="btn" onclick="togglePiP()">Float</button>
+    </div>
+
+    <div id="clock" onclick="togglePiP()" title="Click: Float">00:00:00</div>
+    <div id="date-display" onclick="resetToToday()">----/--/-- (--)</div>
+    
+    <hr>
+
+    <div class="cal-header">
+        <button class="nav-btn" onclick="moveMonth(-1)">PREV</button>
+        <div id="view-label" style="font-weight:800; font-size:1rem;">----年 --月</div>
+        <button class="nav-btn" onclick="moveMonth(1)">NEXT</button>
+    </div>
+    
+    <div class="calendar-grid" id="calendar-body"></div>
+</div>
+
+<canvas id="pipCanvas" width="300" height="150"></canvas>
+<video id="pipVideo" autoplay muted></video>
+
+<script>
+    let baseServerTime = 0, anchorPerf = 0, isSynced = false, isSyncing = false;
+    let viewDate = new Date(), lastTick = Date.now();
+
+    const canvas = document.getElementById('pipCanvas');
+    const ctx = canvas.getContext('2d');
+    const video = document.getElementById('pipVideo');
+
+    // Web Worker
+    const blob = new Blob([`setInterval(() => self.postMessage('t'), 1000);`], {type:'text/javascript'});
+    const worker = new Worker(URL.createObjectURL(blob));
+    worker.onmessage = () => tick();
+
+    async function syncTime(reason = "AUTO") {
+        if (isSyncing) return;
+        isSyncing = true;
+        const syncBtn = document.getElementById('sync-btn');
+        try {
+            const start = performance.now();
+            const res = await fetch('https://1.1.1.1/cdn-cgi/trace', { cache: "no-store", signal: AbortSignal.timeout(4000) });
+            const text = await res.text();
+            const ts = parseFloat(text.split('\n').find(l => l.startsWith('ts=')).split('=')[1]) * 1000;
+            baseServerTime = ts + (performance.now() - start) / 2;
+            anchorPerf = performance.now();
+            isSynced = true;
+            syncBtn.classList.add('active'); 
+            document.getElementById('main-card').classList.add('sync-flash');
+            setTimeout(() => document.getElementById('main-card').classList.remove('sync-flash'), 800);
+            renderCalendar(); 
+        } catch (e) {
+            if (!isSynced) syncBtn.classList.remove('active');
+        } finally { isSyncing = false; }
+    }
+
+    function tick() {
+        const nowSystem = Date.now();
+        if (nowSystem - lastTick > 3000) syncTime("WAKE_UP");
+        lastTick = nowSystem;
+
+        const now = (!isSynced) ? new Date() : new Date(baseServerTime + (performance.now() - anchorPerf));
+        const h = String(now.getHours()).padStart(2, '0');
+        const m = String(now.getMinutes()).padStart(2, '0');
+        const s = String(now.getSeconds()).padStart(2, '0');
+        
+        document.getElementById('clock').textContent = `${h}:${m}:${s}`;
+        // タスクバータイトル：秒数は表示しない
+        document.title = `${h}:${m} | Synclock`;
+        
+        // Float用描画 (時:分のみ)
+        ctx.fillStyle = '#333333'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#ffe600'; ctx.font = 'bold 100px tabular-nums sans-serif'; 
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(`${h}:${m}`, canvas.width/2, canvas.height/2);
+
+        const floatBtn = document.getElementById('float-btn');
+        if (document.pictureInPictureElement) {
+            floatBtn.classList.add('active');
+            floatBtn.textContent = 'Float ON';
+        } else {
+            floatBtn.classList.remove('active');
+            floatBtn.textContent = 'Float';
+        }
+
+        const days = ['日','月','火','水','木','金','土'];
+        document.getElementById('date-display').textContent = `${now.getFullYear()}. ${now.getMonth()+1}. ${now.getDate()} (${days[now.getDay()]})`;
+
+        if (h+m+s === "000000") renderCalendar();
+    }
+
+    async function togglePiP() {
+        try {
+            if (document.pictureInPictureElement) {
+                await document.exitPictureInPicture();
+            } else {
+                const stream = canvas.captureStream(1);
+                video.srcObject = stream;
+                await video.play();
+                await video.requestPictureInPicture();
+            }
+        } catch (e) { console.error("Float failed"); }
+    }
+
+    function renderCalendar() {
+        const now = (!isSynced) ? new Date() : new Date(baseServerTime + (performance.now() - anchorPerf));
+        const year = viewDate.getFullYear(); const month = viewDate.getMonth();
+        document.getElementById('view-label').textContent = `${year}年 ${month + 1}月`;
+        const container = document.getElementById('calendar-body');
+        container.innerHTML = "";
+        ['S','M','T','W','T','F','S'].forEach((l, i) => {
+            const el = document.createElement('div'); el.className = `cell head ${i==0?'sun':i==6?'sat':''}`; el.textContent = l; container.appendChild(el);
+        });
+        const first = new Date(year, month, 1).getDay();
+        const last = new Date(year, month + 1, 0).getDate();
+        const prevLast = new Date(year, month, 0).getDate();
+        for (let i = first; i > 0; i--) {
+            const el = document.createElement('div'); el.className = "cell other-month"; el.textContent = prevLast - i + 1; container.appendChild(el);
+        }
+        for (let d = 1; d <= last; d++) {
+            const el = document.createElement('div'); const dow = new Date(year, month, d).getDay();
+            el.className = "cell"; if (dow==0) el.classList.add('sun'); if (dow==6) el.classList.add('sat');
+            if (year === now.getFullYear() && month === now.getMonth() && d === now.getDate()) el.classList.add('today');
+            el.textContent = d; container.appendChild(el);
+        }
+    }
+
+    function moveMonth(diff) { viewDate.setMonth(viewDate.getMonth() + diff); renderCalendar(); }
+    function resetToToday() {
+        const now = isSynced ? new Date(baseServerTime + (performance.now() - anchorPerf)) : new Date();
+        viewDate = new Date(now.getFullYear(), now.getMonth(), 1);
+        renderCalendar();
+    }
+
+    tick(); renderCalendar(); syncTime("INITIAL");
+    setInterval(() => syncTime("AUTO"), 600000); 
+    document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && syncTime("VISIBLE"));
+</script>
+</body>
+</html>
