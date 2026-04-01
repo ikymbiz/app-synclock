@@ -60,6 +60,7 @@
         .today { background: var(--accent) !important; color: var(--card) !important; font-weight: 900; }
         .sun { color: var(--sun); } .sat { color: var(--sat); } .other-month { opacity: 0.1; }
 
+        /* PiPキャンバスサイズを小さく設定 */
         canvas, video { display: none; }
         .sync-flash { animation: flash-yellow 0.8s ease-out; }
         @keyframes flash-yellow { 0% { background: var(--accent); } 100% { background: transparent; } }
@@ -87,7 +88,7 @@
     <div class="calendar-grid" id="calendar-body"></div>
 </div>
 
-<canvas id="pipCanvas" width="300" height="150"></canvas>
+<canvas id="pipCanvas" width="160" height="80"></canvas>
 <video id="pipVideo" autoplay muted></video>
 
 <script>
@@ -98,7 +99,6 @@
     const ctx = canvas.getContext('2d');
     const video = document.getElementById('pipVideo');
 
-    // Web Worker
     const blob = new Blob([`setInterval(() => self.postMessage('t'), 1000);`], {type:'text/javascript'});
     const worker = new Worker(URL.createObjectURL(blob));
     worker.onmessage = () => tick();
@@ -135,14 +135,14 @@
         const s = String(now.getSeconds()).padStart(2, '0');
         
         document.getElementById('clock').textContent = `${h}:${m}:${s}`;
-        // タスクバータイトル：秒数は表示しない
         document.title = `${h}:${m} | Synclock`;
         
-        // Float用描画 (時:分のみ)
-        ctx.fillStyle = '#333333'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = '#ffe600'; ctx.font = 'bold 100px tabular-nums sans-serif'; 
+        // Float用描画
+        ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#ffffff'; // 文字色を白に変更
+        ctx.font = 'bold 55px tabular-nums sans-serif'; // サイズに合わせてフォント調整
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(`${h}:${m}`, canvas.width/2, canvas.height/2);
+        ctx.fillText(`${h}:${m}`, canvas.width/2, canvas.height/2 + 2);
 
         const floatBtn = document.getElementById('float-btn');
         if (document.pictureInPictureElement) {
