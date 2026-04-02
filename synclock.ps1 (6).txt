@@ -1,0 +1,171 @@
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# === Sync state (matches JS implementation exactly) ===
+$script:baseServerTime = 0
+$script:anchorTick = 0
+$script:isSynced = $false
+$script:isSyncing = $false
+$script:lastTickTime = [Environment]::TickCount
+$script:perfWatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+# === UI ===
+$script:form = New-Object System.Windows.Forms.Form
+$script:form.FormBorderStyle = "None"
+$script:form.AutoScaleMode = "None"
+$script:form.MinimumSize = New-Object System.Drawing.Size(1, 1)
+$script:form.StartPosition = "Manual"
+$screen = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+$script:form.Size = New-Object System.Drawing.Size(50, 44)
+$script:form.Location = New-Object System.Drawing.Point(($screen.Right - 50), ($screen.Bottom - 44))
+$script:form.TopMost = $true
+$script:form.BackColor = [System.Drawing.Color]::FromArgb(26, 26, 26)
+$script:form.ShowInTaskbar = $false
+$script:form.Opacity = 0.92
+
+# Date label (top line)
+$script:dateLabel = New-Object System.Windows.Forms.Label
+$script:dateLabel.Size = New-Object System.Drawing.Size(50, 18)
+$script:dateLabel.Location = New-Object System.Drawing.Point(0, 2)
+$script:dateLabel.ForeColor = [System.Drawing.Color]::FromArgb(170, 170, 170)
+$script:dateLabel.Font = New-Object System.Drawing.Font("Segoe UI", 6)
+$script:dateLabel.TextAlign = "MiddleCenter"
+$script:dateLabel.Text = ""
+$script:form.Controls.Add($script:dateLabel)
+
+# Time label (bottom line)
+$script:timeLabel = New-Object System.Windows.Forms.Label
+$script:timeLabel.Size = New-Object System.Drawing.Size(50, 24)
+$script:timeLabel.Location = New-Object System.Drawing.Point(0, 20)
+$script:timeLabel.ForeColor = [System.Drawing.Color]::White
+$script:timeLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+$script:timeLabel.TextAlign = "MiddleCenter"
+$script:timeLabel.Text = "--:--"
+$script:form.Controls.Add($script:timeLabel)
+
+# Sync indicator dot
+$script:syncIndicator = New-Object System.Windows.Forms.Label
+$script:syncIndicator.Size = New-Object System.Drawing.Size(6, 6)
+$script:syncIndicator.Location = New-Object System.Drawing.Point(3, 3)
+$script:syncIndicator.BackColor = [System.Drawing.Color]::Gray
+$script:form.Controls.Add($script:syncIndicator)
+$script:syncIndicator.BringToFront()
+
+# Flash timer (sync feedback)
+$script:flashTimer = New-Object System.Windows.Forms.Timer
+$script:flashTimer.Interval = 800
+$script:flashTimer.Add_Tick({
+    $script:flashTimer.Stop()
+})
+
+# Drag support (both labels)
+$script:dragging = $false
+$script:dragStart = [System.Drawing.Point]::Empty
+foreach ($lbl in @($script:dateLabel, $script:timeLabel)) {
+    $lbl.Add_MouseDown({ param($s,$e)
+        if ($e.Button -eq "Left") { $script:dragging = $true; $script:dragStart = $e.Location }
+    })
+    $lbl.Add_MouseMove({ param($s,$e)
+        if ($script:dragging) {
+            $script:form.Location = New-Object System.Drawing.Point(($script:form.Left + $e.X - $script:dragStart.X), ($script:form.Top + $e.Y - $script:dragStart.Y))
+        }
+    })
+    $lbl.Add_MouseUp({ $script:dragging = $false })
+}
+
+# Right-click: Manual Sync + Close
+$menu = New-Object System.Windows.Forms.ContextMenuStrip
+$syncItem = $menu.Items.Add("Sync")
+$syncItem.Add_Click({ Start-SyncBackground "MANUAL" })
+$closeItem = $menu.Items.Add("Close")
+$closeItem.Add_Click({ $script:form.Close() })
+$script:dateLabel.ContextMenuStrip = $menu
+$script:timeLabel.ContextMenuStrip = $menu
+
+# === syncTime — BackgroundWorker for non-blocking network call ===
+function Start-SyncBackground {
+    param([string]$reason = "AUTO")
+    if ($script:isSyncing) { return }
+    $script:isSyncing = $true
+
+    $bgWorker = New-Object System.ComponentModel.BackgroundWorker
+    $bgWorker.Add_DoWork({
+        param($sender, $e)
+        try {
+            $start = $script:perfWatch.ElapsedMilliseconds
+            $req = [System.Net.HttpWebRequest]::Create("https://1.1.1.1/cdn-cgi/trace")
+            $req.Timeout = 4000
+            $req.CachePolicy = New-Object System.Net.Cache.RequestCachePolicy([System.Net.Cache.RequestCacheLevel]::NoCacheNoStore)
+            $res = $req.GetResponse()
+            $reader = New-Object System.IO.StreamReader($res.GetResponseStream())
+            $text = $reader.ReadToEnd()
+            $reader.Close()
+            $res.Close()
+            $tsLine = ($text -split "`n") | Where-Object { $_ -match "^ts=" }
+            $tsValue = [double]($tsLine -replace "ts=", "")
+            $tsMs = $tsValue * 1000
+            $elapsed = $script:perfWatch.ElapsedMilliseconds - $start
+            $script:baseServerTime = $tsMs + $elapsed / 2
+            $script:anchorTick = $script:perfWatch.ElapsedMilliseconds
+            $e.Result = $true
+        } catch {
+            $e.Result = $false
+        }
+    })
+    $bgWorker.Add_RunWorkerCompleted({
+        param($sender, $e)
+        if ($e.Result -eq $true) {
+            $script:isSynced = $true
+            $script:syncIndicator.BackColor = [System.Drawing.Color]::FromArgb(255, 230, 0)
+            $script:flashTimer.Start()
+        } else {
+            if (-not $script:isSynced) {
+                $script:syncIndicator.BackColor = [System.Drawing.Color]::Gray
+            }
+        }
+        $script:isSyncing = $false
+    })
+    $bgWorker.RunWorkerAsync()
+}
+
+# === getNow() — isSynced ? baseServerTime + elapsed : system time ===
+function Get-SyncedNow {
+    if ($script:isSynced) {
+        $elapsedSinceAnchor = $script:perfWatch.ElapsedMilliseconds - $script:anchorTick
+        $epochMs = $script:baseServerTime + $elapsedSinceAnchor
+        $epoch = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$epochMs)
+        return $epoch.LocalDateTime
+    } else {
+        return [DateTime]::Now
+    }
+}
+
+# === Main tick (500ms) ===
+$days = @([char]0x65E5,[char]0x6708,[char]0x706B,[char]0x6C34,[char]0x6728,[char]0x91D1,[char]0x571F)
+$script:autoSyncCount = 0
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 500
+$timer.Add_Tick({
+    # Wake-up detection (gap > 3000ms)
+    $nowTick = [Environment]::TickCount
+    $gap = $nowTick - $script:lastTickTime
+    if ($gap -lt 0) { $gap = $gap + [int]::MaxValue }
+    if ($gap -gt 3000) { Start-SyncBackground "WAKE_UP" }
+    $script:lastTickTime = $nowTick
+
+    # Get synced time
+    $now = Get-SyncedNow
+    $d = $days[[int]$now.DayOfWeek]
+    $script:dateLabel.Text = ("{0}/{1} ({2})" -f $now.Month, $now.Day, $d)
+    $script:timeLabel.Text = $now.ToString("HH:mm")
+
+    # Auto sync every 600s (1200 ticks at 500ms)
+    $script:autoSyncCount++
+    if ($script:autoSyncCount % 1200 -eq 0) { Start-SyncBackground "AUTO" }
+})
+$timer.Start()
+
+# === Initial sync (non-blocking) ===
+Start-SyncBackground "INITIAL"
+
+[System.Windows.Forms.Application]::Run($script:form)
