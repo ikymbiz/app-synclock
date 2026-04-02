@@ -88,7 +88,7 @@
     <div class="calendar-grid" id="calendar-body"></div>
 </div>
 
-<canvas id="pipCanvas" width="160" height="80"></canvas>
+<canvas id="pipCanvas" width="80" height="40"></canvas>
 <video id="pipVideo" autoplay muted></video>
 
 <script>
@@ -98,9 +98,6 @@
     const canvas = document.getElementById('pipCanvas');
     const ctx = canvas.getContext('2d');
     const video = document.getElementById('pipVideo');
-
-    // [追加] Document PiP 用の参照
-    let docPipWin = null, docPipClock = null;
 
     try {
         const blob = new Blob([`setInterval(() => self.postMessage('t'), 1000);`], {type:'text/javascript'});
@@ -147,15 +144,12 @@
         // Float用描画
         ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.fillStyle = '#ffffff'; // 文字色を白に変更
-        ctx.font = 'bold 55px tabular-nums sans-serif'; // サイズに合わせてフォント調整
+        ctx.font = 'bold 14px tabular-nums sans-serif';
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(`${h}:${m}`, canvas.width/2, canvas.height/2 + 2);
 
-        // [追加] Document PiP の時計を毎秒更新
-        if (docPipClock) docPipClock.textContent = `${h}:${m}:${s}`;
-
         const floatBtn = document.getElementById('float-btn');
-        if ((docPipWin && !docPipWin.closed) || document.pictureInPictureElement) {
+        if (document.pictureInPictureElement) {
             floatBtn.classList.add('active');
             floatBtn.textContent = 'Float ON';
         } else {
@@ -169,31 +163,16 @@
         if (h+m+s === "000000") renderCalendar();
     }
 
-    // [差し替え] togglePiP: Document PiP対応ブラウザはリサイズ可能なウィンドウで、非対応は旧来のcanvas方式
+    // Canvas PiP のみ使用（タブを作らない）
     async function togglePiP() {
         try {
-            if ('documentPictureInPicture' in window) {
-                // Document PiP (Chrome 116+) — ウィンドウ端をドラッグでリサイズ可能
-                if (docPipWin && !docPipWin.closed) { docPipWin.close(); return; }
-                docPipWin = await window.documentPictureInPicture.requestWindow({ width: 320, height: 120 });
-                docPipWin.document.body.style.cssText =
-                    'margin:0;background:#1a1a1a;display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden;';
-                docPipClock = docPipWin.document.createElement('div');
-                docPipClock.style.cssText =
-                    'font-family:Inter,sans-serif;font-size:clamp(1.5rem,16vw,5rem);font-weight:900;color:#fff;font-variant-numeric:tabular-nums;letter-spacing:-0.05em;user-select:none;';
-                docPipClock.textContent = document.getElementById('clock').textContent;
-                docPipWin.document.body.appendChild(docPipClock);
-                docPipWin.addEventListener('pagehide', () => { docPipWin = null; docPipClock = null; });
+            if (document.pictureInPictureElement) {
+                await document.exitPictureInPicture();
             } else {
-                // 旧来のcanvas PiP (フォールバック)
-                if (document.pictureInPictureElement) {
-                    await document.exitPictureInPicture();
-                } else {
-                    const stream = canvas.captureStream(1);
-                    video.srcObject = stream;
-                    await video.play();
-                    await video.requestPictureInPicture();
-                }
+                const stream = canvas.captureStream(1);
+                video.srcObject = stream;
+                await video.play();
+                await video.requestPictureInPicture();
             }
         } catch (e) { console.error("Float failed"); }
     }
