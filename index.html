@@ -102,9 +102,13 @@
     // [追加] Document PiP 用の参照
     let docPipWin = null, docPipClock = null;
 
-    const blob = new Blob([`setInterval(() => self.postMessage('t'), 1000);`], {type:'text/javascript'});
-    const worker = new Worker(URL.createObjectURL(blob));
-    worker.onmessage = () => tick();
+    try {
+        const blob = new Blob([`setInterval(() => self.postMessage('t'), 1000);`], {type:'text/javascript'});
+        const worker = new Worker(URL.createObjectURL(blob));
+        worker.onmessage = () => tick();
+    } catch (e) {
+        setInterval(() => tick(), 1000);
+    }
 
     async function syncTime(reason = "AUTO") {
         if (isSyncing) return;
