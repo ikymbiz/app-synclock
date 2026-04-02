@@ -98,7 +98,6 @@
     const canvas = document.getElementById('pipCanvas');
     const ctx = canvas.getContext('2d');
     const video = document.getElementById('pipVideo');
-    let docPipWin = null, docPipClock = null;
 
     try {
         const blob = new Blob([`setInterval(() => self.postMessage('t'), 1000);`], {type:'text/javascript'});
@@ -153,13 +152,8 @@
         ctx.font = 'bold 38px sans-serif'; ctx.textAlign = 'left';
         ctx.fillText(`${h}:${m}`, canvas.width/2 + 15, canvas.height/2);
 
-        if (docPipClock) {
-            docPipClock.textContent = `${now.getMonth()+1}/${now.getDate()} (${days[now.getDay()]})  ${h}:${m}`;
-        }
-        if (docPipWin && !docPipWin.closed) docPipWin.document.title = `${h}:${m}`;
-
         const floatBtn = document.getElementById('float-btn');
-        if ((docPipWin && !docPipWin.closed) || document.pictureInPictureElement) {
+        if (document.pictureInPictureElement) {
             floatBtn.classList.add('active');
             floatBtn.textContent = 'Float ON';
         } else {
@@ -172,31 +166,16 @@
         if (h+m+s === "000000") renderCalendar();
     }
 
-    // Document PiP — 1段表示（日付+時刻）
+    // Canvas PiP（タイトルバーなし、操作バーは自動で消える）
     async function togglePiP() {
         try {
-            if ('documentPictureInPicture' in window) {
-                if (docPipWin && !docPipWin.closed) { docPipWin.close(); return; }
-                docPipWin = await window.documentPictureInPicture.requestWindow({ width: 200, height: 48 });
-                docPipWin.document.body.style.cssText =
-                    'margin:0;background:#1a1a1a;display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden;';
-                docPipClock = docPipWin.document.createElement('div');
-                docPipClock.style.cssText =
-                    'font-family:Inter,sans-serif;font-size:clamp(10px,5vw,14px);font-weight:700;color:#fff;font-variant-numeric:tabular-nums;letter-spacing:-0.02em;user-select:none;white-space:nowrap;line-height:1;';
-                const now = new Date();
-                const days = ['日','月','火','水','木','金','土'];
-                docPipClock.textContent = `${now.getMonth()+1}/${now.getDate()} (${days[now.getDay()]})  ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
-                docPipWin.document.body.appendChild(docPipClock);
-                docPipWin.addEventListener('pagehide', () => { docPipWin = null; docPipClock = null; });
+            if (document.pictureInPictureElement) {
+                await document.exitPictureInPicture();
             } else {
-                if (document.pictureInPictureElement) {
-                    await document.exitPictureInPicture();
-                } else {
-                    const stream = canvas.captureStream(1);
-                    video.srcObject = stream;
-                    await video.play();
-                    await video.requestPictureInPicture();
-                }
+                const stream = canvas.captureStream(1);
+                video.srcObject = stream;
+                await video.play();
+                await video.requestPictureInPicture();
             }
         } catch (e) { console.error("Float failed"); }
     }
