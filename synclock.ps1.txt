@@ -1,0 +1,140 @@
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# === Sync state (matches JS implementation exactly) ===
+$script:baseServerTime = 0
+$script:anchorTick = 0
+$script:isSynced = $false
+$script:isSyncing = $false
+$script:lastTickTime = [Environment]::TickCount
+$script:perfWatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+# === syncTime(reason) ===
+function Sync-Time {
+    param([string]$reason = "AUTO")
+    if ($script:isSyncing) { return }
+    $script:isSyncing = $true
+    try {
+        $start = $script:perfWatch.ElapsedMilliseconds
+        $wc = New-Object System.Net.WebClient
+        $wc.Headers.Add("Cache-Control", "no-store")
+        $task = $wc.DownloadStringTaskAsync("https://1.1.1.1/cdn-cgi/trace")
+        if (-not $task.Wait(4000)) { throw "Timeout" }
+        $text = $task.Result
+        $tsLine = ($text -split "`n") | Where-Object { $_ -match "^ts=" }
+        $tsValue = [double]($tsLine -replace "ts=", "")
+        $tsMs = $tsValue * 1000
+        $elapsed = $script:perfWatch.ElapsedMilliseconds - $start
+        $script:baseServerTime = $tsMs + $elapsed / 2
+        $script:anchorTick = $script:perfWatch.ElapsedMilliseconds
+        $script:isSynced = $true
+        $script:syncIndicator.BackColor = [System.Drawing.Color]::FromArgb(255, 230, 0)
+        $script:flashTimer.Start()
+    } catch {
+        if (-not $script:isSynced) {
+            $script:syncIndicator.BackColor = [System.Drawing.Color]::Gray
+        }
+    } finally {
+        $script:isSyncing = $false
+    }
+}
+
+# === getNow() ===
+function Get-SyncedNow {
+    if ($script:isSynced) {
+        $elapsedSinceAnchor = $script:perfWatch.ElapsedMilliseconds - $script:anchorTick
+        $epochMs = $script:baseServerTime + $elapsedSinceAnchor
+        $epoch = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$epochMs)
+        return $epoch.LocalDateTime
+    } else {
+        return [DateTime]::Now
+    }
+}
+
+# === UI ===
+$form = New-Object System.Windows.Forms.Form
+$form.FormBorderStyle = "None"
+$form.StartPosition = "Manual"
+$screen = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+$form.Size = New-Object System.Drawing.Size(200, 36)
+$form.Location = New-Object System.Drawing.Point(($screen.Right - 210), ($screen.Bottom - 46))
+$form.TopMost = $true
+$form.BackColor = [System.Drawing.Color]::FromArgb(26, 26, 26)
+$form.ShowInTaskbar = $false
+$form.Opacity = 0.92
+
+# Clock label
+$label = New-Object System.Windows.Forms.Label
+$label.Dock = "Fill"
+$label.ForeColor = [System.Drawing.Color]::White
+$label.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
+$label.TextAlign = "MiddleCenter"
+$form.Controls.Add($label)
+
+# Sync indicator dot
+$script:syncIndicator = New-Object System.Windows.Forms.Label
+$script:syncIndicator.Size = New-Object System.Drawing.Size(8, 8)
+$script:syncIndicator.Location = New-Object System.Drawing.Point(4, 4)
+$script:syncIndicator.BackColor = [System.Drawing.Color]::Gray
+$form.Controls.Add($script:syncIndicator)
+$script:syncIndicator.BringToFront()
+
+# Flash timer (sync feedback)
+$script:flashTimer = New-Object System.Windows.Forms.Timer
+$script:flashTimer.Interval = 800
+$script:flashTimer.Add_Tick({
+    $script:flashTimer.Stop()
+    if ($script:isSynced) {
+        $script:syncIndicator.BackColor = [System.Drawing.Color]::FromArgb(255, 230, 0)
+    }
+})
+
+# Drag support
+$script:dragging = $false
+$script:dragStart = [System.Drawing.Point]::Empty
+$label.Add_MouseDown({ param($s,$e)
+    if ($e.Button -eq "Left") { $script:dragging = $true; $script:dragStart = $e.Location }
+})
+$label.Add_MouseMove({ param($s,$e)
+    if ($script:dragging) {
+        $form.Location = New-Object System.Drawing.Point(($form.Left + $e.X - $script:dragStart.X), ($form.Top + $e.Y - $script:dragStart.Y))
+    }
+})
+$label.Add_MouseUp({ $script:dragging = $false })
+
+# Right-click: Manual Sync + Close
+$menu = New-Object System.Windows.Forms.ContextMenuStrip
+$syncItem = $menu.Items.Add("Sync")
+$syncItem.Add_Click({ Sync-Time "MANUAL" })
+$closeItem = $menu.Items.Add("Close")
+$closeItem.Add_Click({ $form.Close() })
+$label.ContextMenuStrip = $menu
+
+# === Main tick (500ms) ===
+$days = @([char]0x65E5,[char]0x6708,[char]0x706B,[char]0x6C34,[char]0x6728,[char]0x91D1,[char]0x571F)
+$script:autoSyncCount = 0
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 500
+$timer.Add_Tick({
+    # Wake-up detection (gap > 3000ms)
+    $nowTick = [Environment]::TickCount
+    $gap = $nowTick - $script:lastTickTime
+    if ($gap -lt 0) { $gap = $gap + [int]::MaxValue }
+    if ($gap -gt 3000) { Sync-Time "WAKE_UP" }
+    $script:lastTickTime = $nowTick
+
+    # Get synced time
+    $now = Get-SyncedNow
+    $d = $days[[int]$now.DayOfWeek]
+    $label.Text = ("{0}/{1} ({2})  {3}" -f $now.Month, $now.Day, $d, $now.ToString("HH:mm"))
+
+    # Auto sync every 600s (1200 ticks at 500ms)
+    $script:autoSyncCount++
+    if ($script:autoSyncCount % 1200 -eq 0) { Sync-Time "AUTO" }
+})
+$timer.Start()
+
+# === Initial sync ===
+Sync-Time "INITIAL"
+
+[System.Windows.Forms.Application]::Run($form)
