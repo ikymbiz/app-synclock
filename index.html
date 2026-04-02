@@ -88,7 +88,7 @@
     <div class="calendar-grid" id="calendar-body"></div>
 </div>
 
-<canvas id="pipCanvas" width="80" height="40"></canvas>
+<canvas id="pipCanvas" width="600" height="60"></canvas>
 <video id="pipVideo" autoplay muted></video>
 
 <script>
@@ -142,17 +142,20 @@
         document.getElementById('clock').textContent = `${h}:${m}:${s}`;
         document.title = `${h}:${m} | Synclock`;
         
-        // Float用描画
+        // Float用描画（タスクバー風）
         ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = '#ffffff'; // 文字色を白に変更
-        ctx.font = 'bold 14px tabular-nums sans-serif';
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(`${h}:${m}`, canvas.width/2, canvas.height/2 + 2);
+        const days = ['日','月','火','水','木','金','土'];
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#aaaaaa';
+        ctx.font = '600 28px sans-serif'; ctx.textAlign = 'right';
+        ctx.fillText(`${now.getMonth()+1}/${now.getDate()} (${days[now.getDay()]})`, canvas.width/2 - 15, canvas.height/2);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 38px sans-serif'; ctx.textAlign = 'left';
+        ctx.fillText(`${h}:${m}`, canvas.width/2 + 15, canvas.height/2);
 
         if (docPipClock) docPipClock.textContent = `${h}:${m}`;
         if (docPipWin && !docPipWin.closed) docPipWin.document.title = `${h}:${m}`;
         if (docPipDate) {
-            const days = ['日','月','火','水','木','金','土'];
             docPipDate.textContent = `${now.getMonth()+1}/${now.getDate()} (${days[now.getDay()]})`;
         }
 
@@ -165,7 +168,6 @@
             floatBtn.textContent = 'Float';
         }
 
-        const days = ['日','月','火','水','木','金','土'];
         document.getElementById('date-display').textContent = `${now.getFullYear()}. ${now.getMonth()+1}. ${now.getDate()} (${days[now.getDay()]})`;
 
         if (h+m+s === "000000") renderCalendar();
